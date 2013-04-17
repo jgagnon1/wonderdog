@@ -18,10 +18,17 @@ import org.apache.pig.impl.util.UDFContext;
 import org.codehaus.jackson.JsonParseException;
 import org.codehaus.jackson.map.JsonMappingException;
 import org.codehaus.jackson.map.ObjectMapper;
+import org.elasticsearch.common.settings.loader.SettingsLoader;
+import org.elasticsearch.common.settings.loader.SettingsLoaderFactory;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -258,8 +265,14 @@ public class ElasticSearchStorage extends LoadFunc implements StoreFuncInterface
 
                 // Adds the elasticsearch.yml file (esConfig) and the plugins directory (esPlugins) to the distributed cache
                 try {
-                    String clusterID = String.valueOf(MD5Hash.digest(job.getConfiguration().get(ES_INDEX_NAME) +
+                    String configPath = LOCAL_SCHEME+esConfig;
+                    Map<String, String> settings = readClusterConfig(configPath);
+
+                    // Create Unique Cluster ID using as much information as possible
+                    String clusterID = String.valueOf(MD5Hash.digest(settings.get("cluster.name") +
+                            "_" + job.getConfiguration().get(ES_INDEX_NAME) +
                             "_" + job.getConfiguration().get(ES_OBJECT_TYPE)));
+
                     Path hdfsConfigPath = new Path(ES_CONFIG_HDFS_PATH.replace(CLUSTER_ID_PLACEHOLDER, clusterID));
                     Path hdfsPluginsPath = new Path(ES_PLUGINS_HDFS_PATH.replace(CLUSTER_ID_PLACEHOLDER, clusterID));
                     
@@ -302,6 +315,28 @@ public class ElasticSearchStorage extends LoadFunc implements StoreFuncInterface
     @Override
     public void setStoreLocation(String location, Job job) throws IOException {
         elasticSearchSetup(location, job);
+    }
+
+    /***
+     * Given a configuration Path eg. /home/user/elasticsearch.yml read the file
+     * and return a Map<String, String> of the cluster settings.
+     */
+    private static Map<String, String> readClusterConfig(String path) throws IOException {
+        // Read the ClusterName from the config
+        SettingsLoader loadConfigSettings = SettingsLoaderFactory.loaderFromResource(path);
+
+        // Read the source
+        FileInputStream stream = new FileInputStream(new File(path));
+        try {
+            FileChannel fc = stream.getChannel();
+            MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
+            /* Instead of using default, pass in a decoder. */
+            String source = Charset.defaultCharset().decode(bb).toString();
+
+            return loadConfigSettings.load(source);
+        } finally {
+            stream.close();
+        }
     }
 
     /**
